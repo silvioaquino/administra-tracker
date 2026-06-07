@@ -1,0 +1,42 @@
+import { NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth';
+import { z } from 'zod';
+import { authOptions } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+
+const createSchema = z.object({
+  code: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().nullable().optional(),
+  priority: z.enum(['ALTA', 'MEDIA', 'BAIXA']),
+  status: z.enum(['PENDENTE', 'EM_ANALISE', 'IMPLEMENTADO']),
+  sprintId: z.string().nullable().optional(),
+  assigneeId: z.string().nullable().optional(),
+});
+
+// Improvement guarda apenas sprintRef (rótulo). Derivamos de sprintId.
+const resolveSprintRef = async (sprintId?: string | null): Promise<string | null> => {
+  if (!sprintId) return null;
+  const sprint = await prisma.sprint.findUnique({ where: { id: sprintId }, select: { number: true } });
+  return sprint ? `S${sprint.number}` : null;
+};
+
+export const POST = async (request: Request) => {
+  const session = await getServerSession(authOptions);
+  if (!session) return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
+
+  const parsed = createSchema.safeParse(await request.json());
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'Dados inválidos', issues: parsed.error.issues }, { status: 400 });
+  }
+
+  const { sprintId, ...rest } = parsed.data;
+  const sprintRef = await resolveSprintRef(sprintId);
+
+  const improvement = await prisma.improvement.create({
+    data: { ...rest, sprintRef },
+    include: { assignee: { select: { id: true, name: true, handle: true } } },
+  });
+
+  return NextResponse.json(improvement);
+};

@@ -1,0 +1,192 @@
+// Central de Acompanhamento e Qualidade — Administra.ai
+// Schema do banco (NeonDB / PostgreSQL)
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================ ENUMS ============================
+
+enum Role {
+  DEV
+  SEGURANCA
+  USABILIDADE
+  PM
+  ADMIN
+}
+
+enum TestType {
+  SEGURANCA
+  UNITARIO
+  INTEGRACAO
+  E2E
+  USABILIDADE
+  PERFORMANCE
+  UI_UX
+  ACESSIBILIDADE
+}
+
+enum TestStatus {
+  PENDENTE
+  EXECUTANDO
+  PASSOU
+  FALHOU
+}
+
+enum Priority {
+  ALTA
+  MEDIA
+  BAIXA
+}
+
+enum BugStatus {
+  PENDENTE
+  CORRIGINDO
+  DEPLOYADO
+  FECHADO
+}
+
+enum ImprovementStatus {
+  PENDENTE
+  EM_ANALISE
+  IMPLEMENTADO
+}
+
+enum SprintStatus {
+  NAO_INICIADO
+  EM_ANDAMENTO
+  CONCLUIDO
+}
+
+// ============================ MODELS ============================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  handle       String   @unique // ex: @dev, @seguranca, @usabilidade
+  passwordHash String
+  role         Role     @default(DEV)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tests        Test[]        @relation("TestAssignee")
+  bugs         Bug[]         @relation("BugAssignee")
+  improvements Improvement[] @relation("ImprovementAssignee")
+
+  @@map("users")
+}
+
+model Sprint {
+  id           String       @id @default(cuid())
+  number       Int          @unique
+  title        String
+  dayStart     Int
+  dayEnd       Int
+  status       SprintStatus @default(NAO_INICIADO)
+  expectedBugs String? // ex: "BUG-001, BUG-002"
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  tests Test[]
+  bugs  Bug[]
+
+  @@map("sprints")
+}
+
+model Test {
+  id         String     @id @default(cuid())
+  code       String     @unique // T-001
+  type       TestType
+  title      String
+  scenario   String
+  expected   String
+  status     TestStatus @default(PENDENTE)
+  executedAt DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  sprintId   String
+  sprint     Sprint  @relation(fields: [sprintId], references: [id], onDelete: Cascade)
+  assigneeId String?
+  assignee   User?   @relation("TestAssignee", fields: [assigneeId], references: [id])
+
+  @@index([sprintId])
+  @@index([status])
+  @@index([type])
+  @@map("tests")
+}
+
+model Bug {
+  id          String    @id @default(cuid())
+  code        String    @unique // BUG-001
+  title       String
+  description String?
+  day         String? // ex: "Dia 5"
+  sprintRef   String? // ex: "S1"
+  priority    Priority  @default(MEDIA)
+  status      BugStatus @default(PENDENTE)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  sprintId   String?
+  sprint     Sprint? @relation(fields: [sprintId], references: [id], onDelete: SetNull)
+  assigneeId String?
+  assignee   User?   @relation("BugAssignee", fields: [assigneeId], references: [id])
+
+  @@index([priority])
+  @@index([status])
+  @@map("bugs")
+}
+
+model Improvement {
+  id          String            @id @default(cuid())
+  code        String            @unique // M-001
+  title       String
+  description String?
+  benefit     String?
+  priority    Priority          @default(MEDIA)
+  status      ImprovementStatus @default(PENDENTE)
+  sprintRef   String? // ex: "S9"
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  assigneeId String?
+  assignee   User?   @relation("ImprovementAssignee", fields: [assigneeId], references: [id])
+
+  @@map("improvements")
+}
+
+model ChecklistItem {
+  id        String   @id @default(cuid())
+  category  String // Infraestrutura, Segurança, Testes, Pagamentos, Documentação, Lançamento, Semanal
+  label     String
+  done      Boolean  @default(false)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@map("checklist_items")
+}
+
+model Metric {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  label     String
+  target    String
+  current   String
+  unit      String?
+  trend     String   @default("→")
+  status    String   @default("🟡") // 🔴 🟡 🟢
+  order     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("metrics")
+}
