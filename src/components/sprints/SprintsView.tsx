@@ -2,9 +2,17 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import type { SprintStatus, TestStatus, TestType } from '@prisma/client';
+import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ChevronDown, ChevronRight, Edit, Plus } from 'lucide-react';
 import { SprintsFilters, FilterOptions } from './SprintsFilters';
@@ -12,6 +20,7 @@ import { SprintsListView } from './SprintsListView';
 import { TestsListView } from './TestsListView';
 import { SprintEditDialog } from './SprintEditDialog';
 import { TestEditDialog } from './TestEditDialog';
+import { testStatusMeta, testStatusOrder, testTypeMeta } from '@/lib/labels';
 
 export type TestDTO = {
   id: string;
@@ -57,6 +66,17 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
   });
   const [, setSelectedSprintForView] = useState<SprintDTO | null>(null);
 
+  // Estado local para status dos testes (edição otimista)
+  const [testStatuses, setTestStatuses] = useState<Record<string, TestStatus>>(() => {
+    const initial: Record<string, TestStatus> = {};
+    initialSprints.forEach(sprint => {
+      sprint.tests.forEach(test => {
+        initial[test.id] = test.status;
+      });
+    });
+    return initial;
+  });
+
   // Carregar usuários para atribuição
   useEffect(() => {
     fetch('/api/users')
@@ -65,51 +85,72 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
       .catch(err => console.error('Erro ao carregar usuários:', err));
   }, []);
 
+  // Função para atualizar status diretamente na tabela
+  const updateTestStatus = async (testId: string, newStatus: TestStatus) => {
+    const previousStatus = testStatuses[testId];
+    
+    setTestStatuses(prev => ({ ...prev, [testId]: newStatus }));
+    setSprintsData(prev => prev.map(sprint => ({
+      ...sprint,
+      tests: sprint.tests.map(test => 
+        test.id === testId ? { ...test, status: newStatus } : test
+      )
+    })));
+
+    try {
+      const response = await fetch(`/api/tests/${testId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      
+      if (!response.ok) throw new Error();
+      toast.success(`Status atualizado: ${testStatusMeta[newStatus].label}`);
+    } catch (error) {
+      setTestStatuses(prev => ({ ...prev, [testId]: previousStatus }));
+      setSprintsData(prev => prev.map(sprint => ({
+        ...sprint,
+        tests: sprint.tests.map(test => 
+          test.id === testId ? { ...test, status: previousStatus } : test
+        )
+      })));
+      toast.error('Não foi possível atualizar o status');
+    }
+  };
+
   // Filtrar sprints baseado nos filtros
   const filteredData = useMemo(() => {
     let filteredSprints = [...sprintsData];
 
-    // Filtro de status da sprint
     if (filters.sprintStatus !== 'ALL') {
       filteredSprints = filteredSprints.filter(s => s.status === filters.sprintStatus);
     }
 
-    // Filtro de busca textual
     if (filters.searchTerm) {
       const searchLower = filters.searchTerm.toLowerCase();
       filteredSprints = filteredSprints.filter(sprint => {
-        // Busca em campos da sprint
         const sprintMatches = 
           sprint.title.toLowerCase().includes(searchLower) ||
           sprint.number.toString().includes(searchLower);
-        
-        // Busca em testes
         const testMatches = sprint.tests.some(test =>
           test.code.toLowerCase().includes(searchLower) ||
           test.title.toLowerCase().includes(searchLower) ||
           test.scenario.toLowerCase().includes(searchLower) ||
-          test.expected.toLowerCase().includes(searchLower)
+          test.expected.toLowerCase().includes(searchLower) ||
+          (test.assignee?.name.toLowerCase().includes(searchLower)) ||
+          (test.assignee?.handle.toLowerCase().includes(searchLower))
         );
-        
         return sprintMatches || testMatches;
       });
     }
 
-    // Filtros relacionados a testes
     if (filters.testStatus !== 'ALL' || filters.testType !== 'ALL' || filters.assignee !== 'ALL') {
       filteredSprints = filteredSprints.map(sprint => ({
         ...sprint,
         tests: sprint.tests.filter(test => {
           let matches = true;
-          
-          if (filters.testStatus !== 'ALL') {
-            matches = matches && test.status === filters.testStatus;
-          }
-          
-          if (filters.testType !== 'ALL') {
-            matches = matches && test.type === filters.testType;
-          }
-          
+          if (filters.testStatus !== 'ALL') matches = matches && test.status === filters.testStatus;
+          if (filters.testType !== 'ALL') matches = matches && test.type === filters.testType;
           if (filters.assignee !== 'ALL') {
             if (filters.assignee === 'UNASSIGNED') {
               matches = matches && !test.assignee;
@@ -117,13 +158,11 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
               matches = matches && test.assignee?.id === filters.assignee;
             }
           }
-          
           return matches;
         }),
       }));
     }
 
-    // Remover sprints que ficaram sem testes (se houver filtros de teste ativos)
     if (filters.testStatus !== 'ALL' || filters.testType !== 'ALL' || filters.assignee !== 'ALL') {
       filteredSprints = filteredSprints.filter(sprint => sprint.tests.length > 0);
     }
@@ -131,7 +170,6 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
     return filteredSprints;
   }, [sprintsData, filters]);
 
-  // Preparar lista de todos os testes para visualização em lista
   const allTests = useMemo(() => {
     const tests: Array<TestDTO & { sprintNumber: number; sprintTitle: string; sprintId: string }> = [];
     filteredData.forEach(sprint => {
@@ -157,31 +195,12 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
     setExpandedSprints(newExpanded);
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'PENDENTE':
-        return 'bg-gray-500';
-      case 'EXECUTANDO':
-        return 'bg-blue-500';
-      case 'PASSOU':
-        return 'bg-green-500';
-      case 'FALHOU':
-        return 'bg-red-500';
-      default:
-        return 'bg-gray-500';
-    }
-  };
-
   const getSprintStatusColor = (status: string) => {
     switch (status) {
-      case 'NAO_INICIADO':
-        return 'bg-gray-500';
-      case 'EM_ANDAMENTO':
-        return 'bg-amber-500';
-      case 'CONCLUIDO':
-        return 'bg-green-500';
-      default:
-        return 'bg-gray-500';
+      case 'NAO_INICIADO': return 'bg-gray-500 text-white';
+      case 'EM_ANDAMENTO': return 'bg-blue-500 text-white';
+      case 'CONCLUIDO': return 'bg-green-500 text-white';
+      default: return 'bg-gray-500 text-white';
     }
   };
 
@@ -189,12 +208,98 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
     const response = await fetch('/api/sprints');
     const data = await response.json();
     setSprintsData(data);
+    const newStatuses: Record<string, TestStatus> = {};
+    data.forEach((sprint: SprintDTO) => {
+      sprint.tests.forEach((test: TestDTO) => {
+        newStatuses[test.id] = test.status;
+      });
+    });
+    setTestStatuses(newStatuses);
   };
 
   const handleViewSprint = (sprint: SprintDTO) => {
     setSelectedSprintForView(sprint);
     setExpandedSprints(new Set([sprint.id]));
   };
+
+  // Componente de card para teste em mobile
+  const TestMobileCard = ({ test, sprintId }: { test: TestDTO; sprintId: string }) => (
+    <Card className="mb-3 p-3">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs font-bold">{test.code}</span>
+            <Badge className={testTypeMeta[test.type]?.className || 'bg-gray-500 text-white'}>
+              {testTypeMeta[test.type]?.emoji || '📝'} {test.type}
+            </Badge>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setCurrentSprintId(sprintId);
+              setSelectedTest(test);
+            }}
+          >
+            <Edit className="h-4 w-4" />
+          </Button>
+        </div>
+        
+        <div>
+          <p className="font-medium text-sm">{test.title}</p>
+          <p className="text-xs text-muted-foreground mt-1">{test.scenario}</p>
+        </div>
+        
+        <div>
+          <p className="text-xs text-muted-foreground">
+            <span className="font-semibold">Esperado:</span> {test.expected}
+          </p>
+        </div>
+        
+        <div className="flex flex-col gap-2 pt-1">
+          <div className="w-full">
+            <Select
+              value={testStatuses[test.id] || test.status}
+              onValueChange={(value) => updateTestStatus(test.id, value as TestStatus)}
+            >
+              <SelectTrigger 
+                className={`w-full border-none ${testStatusMeta[testStatuses[test.id] || test.status]?.className || 'bg-gray-500 text-white'}`}
+              >
+                <SelectValue>
+                  <span className="flex items-center gap-2 text-xs">
+                    {testStatusMeta[testStatuses[test.id] || test.status]?.emoji}
+                    {testStatusMeta[testStatuses[test.id] || test.status]?.label}
+                  </span>
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {testStatusOrder.map((status) => (
+                  <SelectItem key={status} value={status}>
+                    <span className={testStatusMeta[status]?.className + ' px-2 py-1 rounded text-xs'}>
+                      {testStatusMeta[status]?.emoji} {testStatusMeta[status]?.label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          
+          {/* Responsável com nome em preto */}
+          <div className="text-xs pt-1 border-t border-border/50">
+            {test.assignee ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-black dark:text-white">Responsável:</span>
+                <span className="font-medium text-black dark:text-white">{test.assignee.name}</span>
+                <span className="text-muted-foreground">(@{test.assignee.handle})</span>
+              </div>
+            ) : (
+              <span className="text-muted-foreground">Não atribuído</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
 
   // Renderização baseada no tipo de visualização
   const renderContent = () => {
@@ -220,7 +325,6 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
       );
     }
 
-    // Visualização padrão (cards expandíveis)
     if (filteredData.length === 0) {
       return (
         <Card>
@@ -236,22 +340,22 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
         {filteredData.map((sprint) => (
           <Card key={sprint.id} className="overflow-hidden">
             <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => toggleSprint(sprint.id)}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  {expandedSprints.has(sprint.id) ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
-                  <CardTitle className="text-lg">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-3 flex-wrap">
+                  {expandedSprints.has(sprint.id) ? <ChevronDown className="h-5 w-5 shrink-0" /> : <ChevronRight className="h-5 w-5 shrink-0" />}
+                  <CardTitle className="text-base sm:text-lg">
                     Sprint #{sprint.number}: {sprint.title}
                   </CardTitle>
                   <Badge className={getSprintStatusColor(sprint.status)}>
                     {sprint.status}
                   </Badge>
                 </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-sm text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-2 ml-6 sm:ml-0">
+                  <div className="text-xs sm:text-sm text-muted-foreground">
                     Dias {sprint.dayStart} - {sprint.dayEnd}
                   </div>
                   {sprint.expectedBugs !== null && (
-                    <Badge variant="outline">Bugs esperados: {sprint.expectedBugs}</Badge>
+                    <Badge variant="outline" className="text-xs">Bugs: {sprint.expectedBugs}</Badge>
                   )}
                   <Button
                     variant="ghost"
@@ -285,58 +389,97 @@ export function SprintsView({ sprints: initialSprints }: SprintsViewProps) {
                     Nenhum teste encontrado para esta sprint.
                   </div>
                 ) : (
-                  <div className="rounded-md border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Código</TableHead>
-                          <TableHead>Tipo</TableHead>
-                          <TableHead>Título</TableHead>
-                          <TableHead>Cenário</TableHead>
-                          <TableHead>Resultado Esperado</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Responsável</TableHead>
-                          <TableHead className="w-[50px]"></TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {sprint.tests.map((test) => (
-                          <TableRow key={test.id}>
-                            <TableCell className="font-mono text-sm">{test.code}</TableCell>
-                            <TableCell>{test.type}</TableCell>
-                            <TableCell>{test.title}</TableCell>
-                            <TableCell className="max-w-md truncate">{test.scenario}</TableCell>
-                            <TableCell className="max-w-md truncate">{test.expected}</TableCell>
-                            <TableCell>
-                              <Badge className={getStatusColor(test.status)}>{test.status}</Badge>
-                            </TableCell>
-                            <TableCell>
-                              {test.assignee ? (
-                                <div className="text-sm">
-                                  <div className="font-medium">{test.assignee.name}</div>
-                                  <div className="text-xs text-muted-foreground">@{test.assignee.handle}</div>
-                                </div>
-                              ) : (
-                                <span className="text-muted-foreground">Não atribuído</span>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  setCurrentSprintId(sprint.id);
-                                  setSelectedTest(test);
-                                }}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
-                            </TableCell>
+                  <>
+                    {/* Versão Desktop - Tabela */}
+                    <div className="hidden md:block rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Código</TableHead>
+                            <TableHead>Tipo</TableHead>
+                            <TableHead>Título</TableHead>
+                            <TableHead>Cenário</TableHead>
+                            <TableHead>Resultado Esperado</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead>Responsável</TableHead>
+                            <TableHead className="w-[50px]"></TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                        </TableHeader>
+                        <TableBody>
+                          {sprint.tests.map((test) => (
+                            <TableRow key={test.id}>
+                              <TableCell className="font-mono text-sm">{test.code}</TableCell>
+                              <TableCell>
+                                <Badge className={testTypeMeta[test.type]?.className || 'bg-gray-500 text-white'}>
+                                  {testTypeMeta[test.type]?.emoji || '📝'} {test.type}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <p className="font-medium">{test.title}</p>
+                                <p className="text-xs text-muted-foreground">{test.scenario}</p>
+                              </TableCell>
+                              <TableCell className="text-sm text-muted-foreground">{test.expected}</TableCell>
+                              <TableCell>
+                                <Select
+                                  value={testStatuses[test.id] || test.status}
+                                  onValueChange={(value) => updateTestStatus(test.id, value as TestStatus)}
+                                >
+                                  <SelectTrigger 
+                                    className={`w-[140px] border-none ${testStatusMeta[testStatuses[test.id] || test.status]?.className || 'bg-gray-500 text-white'}`}
+                                  >
+                                    <SelectValue>
+                                      <span className="flex items-center gap-2">
+                                        {testStatusMeta[testStatuses[test.id] || test.status]?.emoji}
+                                        {testStatusMeta[testStatuses[test.id] || test.status]?.label}
+                                      </span>
+                                    </SelectValue>
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {testStatusOrder.map((status) => (
+                                      <SelectItem key={status} value={status}>
+                                        <span className={testStatusMeta[status]?.className + ' px-2 py-1 rounded w-full text-center'}>
+                                          {testStatusMeta[status]?.emoji} {testStatusMeta[status]?.label}
+                                        </span>
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </TableCell>
+                              <TableCell>
+                                {test.assignee ? (
+                                  <div className="text-sm">
+                                    <div className="font-medium">{test.assignee.name}</div>
+                                    <div className="text-xs text-muted-foreground">@{test.assignee.handle}</div>
+                                  </div>
+                                ) : (
+                                  <span className="text-muted-foreground">Não atribuído</span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    setCurrentSprintId(sprint.id);
+                                    setSelectedTest(test);
+                                  }}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    {/* Versão Mobile - Cards */}
+                    <div className="block md:hidden">
+                      {sprint.tests.map((test) => (
+                        <TestMobileCard key={test.id} test={test} sprintId={sprint.id} />
+                      ))}
+                    </div>
+                  </>
                 )}
               </CardContent>
             )}
