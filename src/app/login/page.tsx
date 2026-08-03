@@ -72,10 +72,10 @@ const LoginPage = () => {
               Entrar
             </Button>
           </form>
-          <p className="mt-4 text-center text-xs text-muted-foreground">
+          {/*<p className="mt-4 text-center text-xs text-muted-foreground">
             Contas do seed: <code>@dev</code>, <code>@seguranca</code>, <code>@usabilidade</code> · senha padrão{' '}
             <code>admin123</code>
-          </p>
+          </p>*/}
         </CardContent>
       </Card>
     </div>
